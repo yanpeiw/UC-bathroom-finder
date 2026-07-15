@@ -790,7 +790,8 @@ function loadCampus(key){
   markers = c.data.map((r,i)=>{
     const [name, region, lat, lng] = r;
     const m = L.marker([lat,lng], {icon:pinIcon(false)});
-    m.bindPopup(`<b>${name}</b><br>${region}<div class="popup-tag">Restroom</div>`);
+    const gmapsUrl = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+    m.bindPopup(`<b>${name}</b><br>${region}<div class="popup-tag">Restroom</div><br><a href="${gmapsUrl}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:#1a73e8;font-size:12.5px;font-weight:500;text-decoration:none;">Open in Google Maps ↗</a>`);
     m.on('click', ()=>selectItem(i));
     m.addTo(markerLayer);
     return m;
