@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UC Bathroom Finder Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --blue:#1a73e8;
+    --gray-bg:#f8f9fa;
+    --border:#e0e0e0;
+    --text:#202124;
+    --text-light:#5f6368;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;font-family:"Segoe UI",Roboto,Arial,sans-serif;color:var(--text);}
+  #app{display:flex;flex-direction:column;height:100vh;width:100vw;}
+
+  /* Top bar */
+  #topbar{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:10px 16px;
+    background:#fff;
+    border-bottom:1px solid var(--border);
+    box-shadow:0 1px 4px rgba(0,0,0,0.06);
+    z-index:20;
+  }
+  #topbar h1{
+    font-size:17px;
+    margin:0;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    white-space:nowrap;
+  }
+  #campus-select{
+    padding:8px 12px;
+    border:1px solid var(--border);
+    border-radius:20px;
+    font-size:14px;
+    font-weight:500;
+    background:#fff;
+    min-width:230px;
+  }
+  #campus-meta{
+    font-size:12px;
+    color:var(--text-light);
+    margin-left:auto;
+  }
+  #confidence-badge{
+    font-size:11px;
+    padding:3px 9px;
+    border-radius:10px;
+    font-weight:600;
+  }
+  .conf-high{background:#e6f4ea;color:#1e8e3e;}
+  .conf-medium{background:#fef7e0;color:#b06000;}
+
+  #main{flex:1;display:flex;min-height:0;}
+
+  /* Sidebar */
+  #sidebar{
+    width:340px;
+    min-width:340px;
+    background:#fff;
+    border-right:1px solid var(--border);
+    display:flex;
+    flex-direction:column;
+    z-index:10;
+  }
+  #sidebar-controls{
+    padding:12px 16px 10px 16px;
+    border-bottom:1px solid var(--border);
+  }
+  #search-box{
+    width:100%;
+    padding:10px 12px;
+    border:1px solid var(--border);
+    border-radius:24px;
+    font-size:14px;
+    outline:none;
+  }
+  #search-box:focus{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue);}
+  #region-filter{
+    margin-top:8px;
+    width:100%;
+    padding:8px 10px;
+    border:1px solid var(--border);
+    border-radius:8px;
+    font-size:13px;
+    background:#fff;
+  }
+  #result-count{
+    padding:8px 16px;
+    font-size:12px;
+    color:var(--text-light);
+    border-bottom:1px solid var(--border);
+  }
+  #list{
+    flex:1;
+    overflow-y:auto;
+  }
+  .item{
+    padding:10px 16px;
+    border-bottom:1px solid #f1f1f1;
+    cursor:pointer;
+    display:flex;
+    gap:10px;
+    align-items:flex-start;
+  }
+  .item:hover{background:var(--gray-bg);}
+  .item.active{background:#e8f0fe;}
+  .item .pin{font-size:18px;line-height:1;margin-top:2px;}
+  .item .info .name{font-size:13.5px;font-weight:500;}
+  .item .info .region{font-size:11.5px;color:var(--text-light);margin-top:2px;}
+  #empty{padding:20px 16px;color:var(--text-light);font-size:13px;display:none;}
+
+  /* Map */
+  #map{flex:1;height:100%;}
+
+  .leaflet-popup-content{font-size:13px;}
+  .leaflet-popup-content b{font-size:14px;}
+  .popup-tag{
+    display:inline-block;
+    margin-top:4px;
+    font-size:11px;
+    background:#e6f4ea;
+    color:#1e8e3e;
+    padding:2px 8px;
+    border-radius:10px;
+  }
+
+  #footer-note{
+    padding:8px 16px;
+    font-size:11px;
+    color:var(--text-light);
+    border-top:1px solid var(--border);
+    background:var(--gray-bg);
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="topbar">
+    <h1>🚻 UC Bathroom Finder</h1>
+    <select id="campus-select"></select>
+    <div id="campus-meta">
+      <span id="confidence-badge"></span>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="sidebar">
+      <div id="sidebar-controls">
+        <input id="search-box" type="text" placeholder="Search a building..." />
+        <select id="region-filter"></select>
+      </div>
+      <div id="result-count"></div>
+      <div id="list"></div>
+      <div id="empty">No restrooms match your search.</div>
+      <div id="footer-note" id="source-note"></div>
+    </div>
+    <div id="map"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// Data: real gender-inclusive / single-occupancy / general
+// restroom-bearing building locations across UC campuses,
+// compiled from each campus's official facilities / inclusion
+// office publications. Coordinates are approximate (building-
+// level) except UC Santa Cruz, which is sourced from precise
+// KML placemark data.
+// ============================================================
+const CAMPUSES = {
+
+ucsd: {
+  label: "UC San Diego",
+  center: [32.8795,-117.2380],
+  zoom: 15,
+  confidence: "high",
+  source: "UCSD Blink “Gender-Inclusive & Single-Occupancy Restroom Locations” + m.ucsd.edu campus map API. 108 confirmed locations. Pins approximate (building-level).",
+  data: [
+["Engineering Building - Unit II","Warren",32.8822,-117.2360],
+["Visual Arts Center","Muir",32.8827,-117.2404],
+["University Center 409 (U409)","Price Center / UCEN",32.8798,-117.2372],
+["Powell-Focht Bioengineering Hall","Warren",32.8828,-117.2362],
+["University Center 611 (U611)","Price Center / UCEN",32.8799,-117.2373],
+["Price Center","Price Center / UCEN",32.8797,-117.2371],
+["Computer Science and Engineering Bldg (EBU3B)","Warren",32.8818,-117.2345],
+["Jacobs Hall / Engineering Bldg Unit I (EBU1)","Warren",32.8823,-117.2354],
+["Cross Cultural Center (CCC)","Price Center / UCEN",32.8800,-117.2379],
+["6th Student Services","Sixth College",32.8770,-117.2360],
+["University Center 302 (U302)","Price Center / UCEN",32.8797,-117.2372],
+["Richard C. Atkinson Hall","Warren",32.8826,-117.2350],
+["UCTR 400 (U400)","Price Center / UCEN",32.8798,-117.2373],
+["UCTR 401 (U401)","Price Center / UCEN",32.8798,-117.2373],
+["University Center 303 (U303)","Price Center / UCEN",32.8797,-117.2372],
+["Brennan Hall","Sixth College",32.8775,-117.2368],
+["Goldberg Hall","Sixth College",32.8776,-117.2365],
+["Geisel Library","Central Campus",32.8810,-117.2370],
+["Douglas Hall","Sixth College",32.8774,-117.2363],
+["Student Health and Wellness Center","Central Campus",32.8792,-117.2390],
+["UCSD Career Services Center","Price Center / UCEN",32.8805,-117.2376],
+["6th South Laundry","Sixth College",32.8773,-117.2358],
+["Canyon Vista","Sixth College",32.8768,-117.2364],
+["Stein Clinical Research Building","Health Sciences",32.8740,-117.2355],
+["6th North Laundry","Sixth College",32.8778,-117.2358],
+["Sixth College Apartments 300","Sixth College",32.8765,-117.2355],
+["Leichtag Family Foundation Biomedical Research Bldg","Health Sciences",32.8748,-117.2345],
+["Black Hall","Warren",32.8830,-117.2358],
+["Campus Services Complex, Building B (Police Dept)","Health Sciences",32.8735,-117.2300],
+["School of Medicine Building 2","Health Sciences",32.8744,-117.2358],
+["School of Medicine Building 3","Health Sciences",32.8743,-117.2361],
+["Medical Teaching Facility","Health Sciences",32.8742,-117.2359],
+["Biomedical Science Building","Health Sciences",32.8752,-117.2352],
+["Center for Molecular Medicine East (CMME)","Health Sciences",32.8743,-117.2348],
+["Campus Services Complex, Building D","Health Sciences",32.8734,-117.2298],
+["School of Medicine Building 1","Health Sciences",32.8745,-117.2362],
+["School of Medicine Building 4","Health Sciences",32.8741,-117.2357],
+["George Palade Laboratories","Health Sciences",32.8746,-117.2350],
+["Media Center and Communications Building","Muir",32.8822,-117.2408],
+["W.M. Keck Building (KECK)","Health Sciences",32.8744,-117.2364],
+["Biomedical Library","Health Sciences",32.8757,-117.2352],
+["Clinical Research Facility","Health Sciences",32.8738,-117.2352],
+["Mandeville Center","Muir",32.8794,-117.2419],
+["Guava","Eighth / Warren",32.8791,-117.2338],
+["Student Center","Price Center / UCEN",32.8802,-117.2378],
+["Applied Physics and Mathematics Building (AP&M)","Marshall",32.8815,-117.2378],
+["Skaggs School of Pharmacy and Pharmaceutical Sciences","Health Sciences",32.8735,-117.2345],
+["Goody's Place and Market","The Village",32.8880,-117.2288],
+["Ivy","Eighth / Warren",32.8789,-117.2336],
+["Holly Building","Muir",32.8788,-117.2422],
+["San Diego Supercomputer Center","Warren",32.8836,-117.2337],
+["Jacaranda","Eighth / Warren",32.8793,-117.2340],
+["Social Sciences Building","Muir",32.8787,-117.2424],
+["Humanities and Social Sciences Building (HSS)","Marshall",32.8812,-117.2384],
+["Thornton Hospital Group, Thornton","Health Sciences",32.8703,-117.2280],
+["Bonner Hall","Muir",32.8785,-117.2418],
+["School of International Relations and Pacific Studies","ERC",32.8862,-117.2322],
+["Thornton Hospital Group, Thornton, Western","Health Sciences",32.8702,-117.2284],
+["Natatorium","ERC",32.8866,-117.2400],
+["Urey Hall","Revelle",32.8757,-117.2412],
+["School of Global Policy and Strategy (GPS) - Admin","ERC",32.8861,-117.2318],
+["Urey Hall Addition","Revelle",32.8756,-117.2409],
+["International House","ERC",32.8866,-117.2372],
+["Institute of the Americas Building (IOA)","ERC",32.8859,-117.2316],
+["Tioga Hall","Sixth College",32.8770,-117.2366],
+["Thornton Hospital Group, Perlman","Health Sciences",32.8704,-117.2278],
+["Revelle College Provost Office","Revelle",32.8746,-117.2396],
+["Galbraith Hall","Revelle",32.8749,-117.2408],
+["UCSD Natural Sciences Building","Revelle",32.8760,-117.2415],
+["Ratner Children's Eye Center","Health Sciences",32.8706,-117.2283],
+["ERC Laundry","ERC",32.8864,-117.2368],
+["Middle Earth Lounge","Eighth / Warren",32.8805,-117.2330],
+["Moores Cancer Center","Health Sciences",32.8710,-117.2278],
+["Cafe Ventanas","The Village",32.8882,-117.2292],
+["Hamilton Glaucoma / Jacobs Retina Center","Health Sciences",32.8705,-117.2281],
+["Mesa Housing 3755 West","Mesa Housing",32.8680,-117.2230],
+["Meridian Room","The Village",32.8879,-117.2286],
+["The Market in the Village","The Village",32.8881,-117.2290],
+["The Bistro","The Village",32.8880,-117.2291],
+["The Village West 2","The Village",32.8878,-117.2293],
+["Mesa Housing 3875 North","Mesa Housing",32.8682,-117.2228],
+["Mesa Housing 9184 South","Mesa Housing",32.8678,-117.2225],
+["Radiation Oncology PET/CT Center","Health Sciences",32.8707,-117.2280],
+["Mesa Housing 9238 Central","Mesa Housing",32.8676,-117.2232],
+["Mesa Housing 9156 South","Mesa Housing",32.8679,-117.2222],
+["Mesa Housing 3999 North","Mesa Housing",32.8684,-117.2226],
+["Mesa Housing 9264 Central","Mesa Housing",32.8674,-117.2234],
+["Mesa Housing 9126 South","Mesa Housing",32.8677,-117.2220],
+["Keck OAR 1","SIO / Scripps",32.8660,-117.2535],
+["Keck OAR 2","SIO / Scripps",32.8661,-117.2533],
+["Spiess Hall","SIO / Scripps",32.8672,-117.2548],
+["Nierenberg Hall Annex (NTV Building)","SIO / Scripps",32.8665,-117.2528],
+["Hydraulics Laboratory","SIO / Scripps",32.8668,-117.2540],
+["IGPP Munk Laboratory","SIO / Scripps",32.8663,-117.2532],
+["Deep Sea Drilling West","SIO / Scripps",32.8670,-117.2552],
+["IGPP 3000 - Revelle Laboratory","SIO / Scripps",32.8664,-117.2530],
+["IGPP 2000","SIO / Scripps",32.8665,-117.2531],
+["T-42 SIO Storehouse, Marine Sciences Dev Center","SIO / Scripps",32.8667,-117.2555],
+["Marine Sciences","SIO / Scripps",32.8671,-117.2545],
+["T-16 / SIO Old Director's House","SIO / Scripps",32.8669,-117.2550],
+["T-3 - Marine Sciences Development Shop","SIO / Scripps",32.8668,-117.2553],
+["Center for Coastal Studies (CCS)","SIO / Scripps",32.8666,-117.2548],
+["Scholander","SIO / Scripps",32.8673,-117.2543],
+["Kaplan Lab (Experimental Aquarium)","SIO / Scripps",32.8672,-117.2556],
+["SIO, Sumner Auditorium","SIO / Scripps",32.8670,-117.2540],
+["Ritter Hall","SIO / Scripps",32.8674,-117.2549],
+["Sverdrup Hall","SIO / Scripps",32.8675,-117.2544],
+["Scripps Seaside Forum","SIO / Scripps",32.8658,-117.2568]
+  ]
+},
+
+berkeley: {
+  label: "UC Berkeley",
+  center: [37.8719,-122.2585],
+  zoom: 15,
+  confidence: "high",
+  source: "UC Berkeley Facilities “Inclusive Restrooms” building table (facilities.berkeley.edu/inclusive-restrooms). Coordinates are approximate.",
+  data: [
+["Doe Library","Central Campus",37.8721,-122.2597],
+["Moffitt Library","Central Campus",37.8726,-122.2596],
+["Wheeler Hall","Central Campus",37.8719,-122.2595],
+["Dwinelle Hall","Central Campus",37.8712,-122.2603],
+["California Hall","Central Campus",37.8716,-122.2601],
+["South Hall","Central Campus / Campanile Esplanade",37.8712,-122.2589],
+["Sproul Hall","Sproul Plaza",37.8696,-122.2593],
+["Eshleman Hall","Sproul Plaza (ASUC)",37.8691,-122.2596],
+["MLK Jr. Student Union","Lower Sproul Plaza",37.8688,-122.2593],
+["Cesar Chavez Student Center","Lower Sproul Plaza",37.8687,-122.2590],
+["Zellerbach Hall","Lower Sproul Plaza",37.8699,-122.2588],
+["Hertz Hall","Faculty Glade Area",37.8711,-122.2578],
+["Wurster Hall","Bancroft/College (SE Campus)",37.8699,-122.2540],
+["Evans Hall","North/East Campus",37.8744,-122.2578],
+["Soda Hall","North Campus (EECS)",37.8756,-122.2589],
+["Cory Hall","North Campus (EECS)",37.8749,-122.2580],
+["Sutardja Dai Hall","North Campus (CITRIS)",37.8752,-122.2596],
+["Etcheverry Hall","North Campus (Engineering)",37.8748,-122.2571],
+["Davis Hall","North Campus (Engineering)",37.8757,-122.2569],
+["Hesse Hall","North Campus (Engineering)",37.8756,-122.2564],
+["Valley Life Sciences Building (VLSB)","Central Campus",37.8734,-122.2611],
+["Gilman Hall","North Campus (Chemistry)",37.8760,-122.2617],
+["Latimer Hall","North Campus (Chemistry)",37.8761,-122.2606],
+["Tan Hall","North Campus (Chem. Engineering)",37.8756,-122.2603],
+["Stanley Hall","North Campus (Bioengineering)",37.8744,-122.2607],
+["Birge Hall","North Campus (Physics)",37.8757,-122.2611],
+["Chern Hall","North Campus (Physics)",37.8760,-122.2614],
+["Calvin Lab (Simons Institute)","North Campus",37.8759,-122.2593],
+["Barker Hall","West Campus (Life Sciences)",37.8709,-122.2637],
+["Morgan Hall","West Campus",37.8706,-122.2633],
+["Mulford Hall","West Campus (Forestry)",37.8724,-122.2637],
+["Giannini Hall","West Campus",37.8697,-122.2627],
+["Haviland Hall","West Campus (Social Welfare)",37.8734,-122.2653],
+["McCone Hall","East Campus (Earth Sciences)",37.8736,-122.2568],
+["Blum Hall","East Campus",37.8730,-122.2543],
+["Law Building (Boalt Hall)","SE Campus (Law School)",37.8697,-122.2604],
+["McEnerney Hall","SE Campus (Law School)",37.8694,-122.2606],
+["Simon Hall","SE Campus (Law School)",37.8688,-122.2604],
+["Social Sciences Building","Central Campus",37.8683,-122.2596],
+["Haas Pavilion","SE Campus (Athletics)",37.8686,-122.2609],
+["Recreational Sports Facility (RSF)","South Campus",37.8663,-122.2593],
+["Hearst Gymnasium","North Campus",37.8709,-122.2570],
+["Hearst Greek Theatre","NE Campus",37.8747,-122.2536],
+["California Memorial Stadium","East Campus",37.8716,-122.2505],
+["BAMPFA (Berkeley Art Museum)","Downtown Berkeley",37.8686,-122.2680],
+["Stephens Hall","Central Campus",37.8693,-122.2600],
+["Stiles Hall","SE Campus",37.8697,-122.2622],
+["North Gate Hall","North Campus (Journalism)",37.8752,-122.2611],
+["Anthropology & Art Practice Building","Central Campus",37.8695,-122.2621],
+["Li Ka Shing Center","North Campus (Genomics)",37.8738,-122.2607],
+["Berkeley Way West","North Campus",37.8749,-122.2620],
+["Bakar Faculty Building","North Campus",37.8746,-122.2618],
+["Chou Hall","Haas School of Business",37.8701,-122.2536],
+["Blackwell Hall","Haas School of Business",37.8703,-122.2540],
+["Stern Hall (dorm)","North Campus Residential",37.8752,-122.2537],
+["Foothill Student Housing","North Campus Residential",37.8770,-122.2618],
+["Unit 1 Residence Halls","South Campus Residential",37.8657,-122.2538],
+["Unit 2 Residence Halls","South Campus Residential",37.8654,-122.2545],
+["Unit 3 Residence Halls","South Campus Residential",37.8662,-122.2531],
+["Jackson Graduate House","South Campus Residential",37.8659,-122.2557],
+["Women's Faculty Club","Central Campus (Faculty Glade)",37.8724,-122.2578],
+["Lawrence Hall of Science","Hill Campus",37.8795,-122.2508],
+["UC Botanical Garden (Upper Restrooms)","Strawberry Canyon",37.8752,-122.2400],
+["Anna Head Building E","South Campus (Channing Way)",37.8674,-122.2560]
+  ]
+},
+
+davis: {
+  label: "UC Davis",
+  center: [38.5382,-121.7617],
+  zoom: 15,
+  confidence: "medium",
+  source: "UC Davis Facilities Management / LGBTQIA Resource Center gender-inclusive restroom listings + LocalWiki UCD Bathrooms page. Coordinates estimated.",
+  data: [
+["Women's Resources and Research Center","South Campus / Social Sciences",38.5345,-121.7527],
+["Shields Library (4th Floor)","Central Campus / Quad",38.5395,-121.7514],
+["Student Community Center","West Central Campus",38.5429,-121.7600],
+["Memorial Union (MU)","Central Campus",38.5407,-121.7523],
+["MUGA (Memorial Union Games Area)","Central Campus",38.5407,-121.7523],
+["Freeborn Hall","Central Campus",38.5411,-121.7533],
+["Kerr Hall","North Central Campus",38.5427,-121.7513],
+["Wellman Hall","Central Campus / Quad",38.5400,-121.7519],
+["Olson Hall","Central Campus / Quad",38.5388,-121.7524],
+["Sproul Hall","Central Campus / Quad",38.5397,-121.7507],
+["Young Hall","Central Campus / Quad",38.5383,-121.7495],
+["Storer Hall","Central Campus / Quad",38.5384,-121.7492],
+["Chemistry Building","Central Campus / Sciences",38.5388,-121.7505],
+["Chemistry Annex","Central Campus / Sciences",38.5390,-121.7502],
+["Physics and Geology Building","Central Campus / Sciences",38.5378,-121.7500],
+["Roessler Hall","Central Campus",38.5403,-121.7517],
+["Academic Surge","North Campus",38.5432,-121.7548],
+["Dutton Hall","North Campus",38.5425,-121.7539],
+["Mathematical Sciences Building","Engineering Quad",38.5361,-121.7517],
+["Bainer Hall","Engineering Quad",38.5359,-121.7521],
+["Kemper Hall","Engineering Quad",38.5357,-121.7526],
+["Engineering Unit III","Engineering Quad",38.5352,-121.7532],
+["Giedt Hall","Engineering Quad",38.5364,-121.7513],
+["King Hall (School of Law)","South Campus",38.5344,-121.7529],
+["ARC (Activities and Recreation Center)","West Campus",38.5423,-121.7607],
+["The Silo (Student Union / Dining)","Central Campus",38.5415,-121.7562],
+["South Silo Building / Craft Center","Central Campus",38.5408,-121.7568],
+["Veihmeyer Hall","Central-West Campus",38.5377,-121.7548],
+["Plant and Environmental Sciences Building","West Campus / Ag Sciences",38.5372,-121.7568],
+["Genome and Biomedical Sciences Facility","Southwest Campus",38.5343,-121.7577],
+["Robert Mondavi Institute for Wine and Food Science","South Campus",38.5338,-121.7618],
+["Meyer Hall (Veterinary Medicine)","Southwest Campus",38.5328,-121.7612]
+  ]
+},
+
+irvine: {
+  label: "UC Irvine",
+  center: [33.6450,-117.8420],
+  zoom: 14,
+  confidence: "high",
+  source: "UCI Office of Inclusive Excellence “Gender-Inclusive Facilities Locations” table (inclusion.uci.edu). Coordinates approximate, placed by campus zone.",
+  data: [
+["Langson Library","Library / Central Campus",33.6471,-117.8411],
+["Gateway Study Center","Library / Central Campus",33.6474,-117.8408],
+["Aldrich Hall","Administration / Central Campus",33.6465,-117.8420],
+["Student Center","Central Campus",33.6461,-117.8420],
+["Student Ser I","Central Campus",33.6463,-117.8423],
+["Cross Cultural Center","Central Campus",33.6464,-117.8422],
+["Krieger Hall","Humanities",33.6459,-117.8433],
+["Humanities Hall","Humanities",33.6462,-117.8438],
+["Humanities Gateway","Humanities",33.6465,-117.8436],
+["Humanities Instructional Building","Humanities",33.6460,-117.8435],
+["Social Science Plaza B","Social Sciences",33.6467,-117.8402],
+["Social Science Lab","Social Sciences",33.6470,-117.8398],
+["Social Ecology I","Social Sciences",33.6473,-117.8396],
+["Engineering Tower","Engineering",33.6452,-117.8390],
+["Information & Computer Science","Engineering / ICS",33.6449,-117.8393],
+["Information & Computer Science 2","Engineering / ICS",33.6447,-117.8391],
+["Bren Hall","Engineering / ICS",33.6445,-117.8388],
+["Rockwell Engineering Center","Engineering",33.6450,-117.8385],
+["Engineering & Computing Trailer","Engineering",33.6448,-117.8383],
+["Calit2","Engineering",33.6443,-117.8386],
+["Rowland Hall","Physical Sciences",33.6480,-117.8397],
+["Croul Hall","Physical Sciences",33.6482,-117.8394],
+["Physical Sciences High Bay","Physical Sciences",33.6478,-117.8391],
+["Schneiderman Lecture Hall","Physical Sciences",33.6484,-117.8399],
+["Steinhaus Hall","Biological Sciences",33.6485,-117.8408],
+["McGaugh Hall","Biological Sciences",33.6488,-117.8405],
+["Biological Sciences III","Biological Sciences",33.6491,-117.8402],
+["Science Library","Biological Sciences",33.6489,-117.8410],
+["Greenhouse","Biological Sciences",33.6493,-117.8407],
+["Art Studio","Arts",33.6472,-117.8459],
+["Art, Culture & Technology","Arts",33.6475,-117.8462],
+["Music & Media Building","Arts",33.6470,-117.8456],
+["Studio Four","Arts",33.6468,-117.8458],
+["Production Studio","Arts",33.6467,-117.8460],
+["Arts Annex Trailer 2","Arts",33.6473,-117.8455],
+["KUCI Radio","Arts / Central Campus",33.6469,-117.8452],
+["Bren Events Center","Athletics & Recreation",33.6428,-117.8415],
+["Anteater Ball Park","Athletics & Recreation",33.6420,-117.8425],
+["Anteater Recreation Center","Athletics & Recreation",33.6412,-117.8455],
+["Anteater Learning Pavilion","Athletics & Recreation",33.6435,-117.8430],
+["Irvine Hall","Health Sciences",33.6405,-117.8375],
+["Medical Education Bldg.","Health Sciences",33.6408,-117.8372],
+["Medical Sciences A Admin.","Health Sciences",33.6402,-117.8378],
+["Medical Sciences A Annex","Health Sciences",33.6400,-117.8380],
+["Medical Sciences C","Health Sciences",33.6398,-117.8376],
+["Medical Surge II","Health Sciences",33.6410,-117.8368],
+["Gavin Herbert Eye Institute","Health Sciences",33.6415,-117.8365],
+["Hewitt Research Hall","Health Sciences",33.6407,-117.8382],
+["Beckman Laser Institute","Health Sciences",33.6412,-117.8370],
+["ISEB","Health Sciences",33.6420,-117.8380],
+["Tamkin Lecture Hall","Health Sciences",33.6403,-117.8384],
+["Berk Hall","Health Sciences",33.6416,-117.8373],
+["Law","Central Campus",33.6440,-117.8392],
+["Air Pollution Labs APL Bldg #1","West Campus / Facilities",33.6500,-117.8470],
+["Env. Health & Safety Services","West Campus / Facilities",33.6505,-117.8465],
+["Faculty Research Facility","West Campus / Facilities",33.6498,-117.8472],
+["Mesa Court Housing Office","Student Housing (Mesa Court)",33.6520,-117.8480],
+["Mesa Court Fitness/Recreation Center","Student Housing (Mesa Court)",33.6522,-117.8478],
+["Middle Earth Housing Office","Student Housing (Middle Earth)",33.6495,-117.8440],
+["Middle Earth Pippin Community Center","Student Housing (Middle Earth)",33.6497,-117.8438],
+["Middle Earth Towers","Student Housing (Middle Earth)",33.6499,-117.8442],
+["Campus Village Community Center","Student Housing (Campus Village)",33.6385,-117.8340],
+["Campus Village Housing Office","Student Housing (Campus Village)",33.6383,-117.8342],
+["Verano Place Community Center","Student Housing (Verano Place)",33.6360,-117.8330],
+["Verano Place Housing Office","Student Housing (Verano Place)",33.6358,-117.8332],
+["Palo Verde Community Center","Student Housing (Palo Verde)",33.6440,-117.8500],
+["Arroyo Vista Community Center","Student Housing (Arroyo Vista)",33.6370,-117.8460],
+["Housing Administrative Services Office","Student Housing",33.6450,-117.8460]
+  ]
+},
+
+ucla: {
+  label: "UCLA",
+  center: [34.0700,-118.4430],
+  zoom: 15,
+  confidence: "medium",
+  source: "UCLA LGBT Campus Resource Center “All-Gender Restroom Map” (2015, since expanded) + UCLA Policy 890 / Housing FAQ. Coordinates approximate.",
+  data: [
+["700 Westwood Plaza","Health Sciences/South Campus",34.0664,-118.4396],
+["Ackerman Union","Central Campus",34.0707,-118.4436],
+["Ashe Center","Central Campus",34.0668,-118.4453],
+["Brain Research Institute (School of Medicine)","Health Sciences",34.0645,-118.4390],
+["Bunche Hall","North Campus",34.0719,-118.4413],
+["Campbell Hall","North Campus",34.0721,-118.4407],
+["California NanoSystems Institute","South Campus",34.0662,-118.4437],
+["Covel Commons","Hill (Residential)",34.0752,-118.4488],
+["Dentistry Building","Health Sciences",34.0610,-118.4408],
+["Drake Stadium","South Campus Athletics",34.0684,-118.4487],
+["Facilities Management Building","South Campus",34.0625,-118.4460],
+["Fernald Center","North Campus",34.0748,-118.4448],
+["Health Sciences Building","Health Sciences",34.0605,-118.4402],
+["John Wooden Center","South Campus Athletics",34.0679,-118.4472],
+["Kerckhoff Hall","Central Campus",34.0706,-118.4432],
+["Kinross Center","South Campus",34.0629,-118.4477],
+["Krieger Center A","Hill (Northwest)",34.0793,-118.4525],
+["Krieger Center B","Hill (Northwest)",34.0790,-118.4520],
+["La Kretz Hall","South Campus",34.0665,-118.4430],
+["Lath House","South Campus",34.0656,-118.4400],
+["UCLA School of Law","North Campus",34.0716,-118.4390],
+["MacDonald Research Laboratory (MRL)","South Campus",34.0658,-118.4432],
+["MacGowan Hall","Central Campus",34.0729,-118.4443],
+["Murphy Hall","Central Campus",34.0703,-118.4420],
+["Orthopaedic Hospital Research Center","Health Sciences",34.0657,-118.4397],
+["Pauley Pavilion","South Campus Athletics",34.0700,-118.4468],
+["Plant Growth Center","South Campus",34.0656,-118.4400],
+["Reed Neurological Research Center","Health Sciences",34.0660,-118.4395],
+["Rehabilitation Center","Health Sciences",34.0648,-118.4390],
+["Royce Hall","North Campus",34.0722,-118.4423],
+["Ronald Reagan UCLA Medical Center","Health Sciences",34.0663,-118.4402],
+["Schoenberg Music Center","Central Campus",34.0731,-118.4437],
+["Semel Institute for Neuroscience","Health Sciences",34.0664,-118.4393],
+["Science and Technology Research Building","Health Sciences",34.0645,-118.4388],
+["Sycamore Tennis Courts","Hill (Northwest)",34.0796,-118.4515],
+["Terasaki Life Sciences Building","South Campus",34.0666,-118.4408],
+["Warren Hall","Health Sciences",34.0650,-118.4393],
+["Young Research Library","North Campus",34.0736,-118.4405],
+["Hedrick Hall (all-gender floors 2,3,5,6,7)","Hill (Residential)",34.0757,-118.4499],
+["Rieber Hall (all-gender floors 2,3,5,6,7)","Hill (Residential)",34.0762,-118.4511],
+["Sproul Hall (all-gender floors 2,3,5,6,7)","Hill (Residential)",34.0747,-118.4470],
+["Dykstra Hall (near De Neve Plaza Auditorium)","Hill (Residential)",34.0741,-118.4482]
+  ]
+},
+
+merced: {
+  label: "UC Merced",
+  center: [37.3655,-120.4225],
+  zoom: 15,
+  confidence: "medium",
+  source: "UC Merced OPHD “All Gender Restroom Locations” campus map PDF. Coordinates estimated.",
+  data: [
+["Kolligian Library","North Campus",37.3673,-120.4229],
+["Classroom and Office Building 1 (COB1)","North Campus",37.3669,-120.4233],
+["Classroom and Office Building 2 (COB2)","North Campus",37.3666,-120.4236],
+["Academic Office Annex (AOA)","North Campus",37.3664,-120.4239],
+["Student Services Building (SSB)","North Campus",37.3661,-120.4241],
+["Social Sciences and Management (SSM)","North Campus",37.3658,-120.4238],
+["Student Activities and Athletics Center (SAAC)","North Campus",37.3674,-120.4221],
+["Joseph Gallo Recreation and Wellness Center (R&WC)","North Campus",37.3678,-120.4218],
+["Early Childhood Education Center (ECEC)","North Campus",37.3682,-120.4246],
+["Arts and Computational Sciences (ACS)","South Campus (Merced 2020)",37.3632,-120.4211],
+["Biomedical Sciences and Physics (BSP)","South Campus (Merced 2020)",37.3629,-120.4206],
+["Sustainability Research and Engineering (SRE)","South Campus (Merced 2020)",37.3626,-120.4202],
+["Conference Center","South Campus (Merced 2020)",37.3636,-120.4216],
+["Health Center","South Campus (Merced 2020)",37.3641,-120.4223],
+["Fred & Ritzie Ruiz Administration Center (Admin)","South Campus (Merced 2020)",37.3639,-120.4219],
+["Granite Pass Housing (GP)","Student Housing - South Campus",37.3617,-120.4197]
+  ]
+},
+
+riverside: {
+  label: "UC Riverside",
+  center: [33.9737,-117.3270],
+  zoom: 15,
+  confidence: "medium",
+  source: "UCR LGBT Resource Center “UCR Trans Guide” + Inside UCR reporting on gender-inclusive restrooms; remaining entries are OSM-verified building fallback.",
+  data: [
+["Spieth Hall","Gender-Inclusive Restroom (confirmed, multi-stall)",33.972598,-117.326467],
+["Athletics & Dance Building","Gender-Inclusive Restroom (confirmed, multi-stall)",33.974799,-117.329675],
+["Student Success Center","Gender-Inclusive Restroom (confirmed, multi-stall)",33.974200,-117.330557],
+["Dundee-Glasgow Residence Hall","Gender-Inclusive Restroom (confirmed, multi-stall)",33.978743,-117.325453],
+["Costo Hall","Central Campus",33.974218,-117.329225],
+["Highlander Union Building (HUB)","Central Campus",33.974312,-117.328798],
+["Tomás Rivera Library","Central Campus",33.972651,-117.327537],
+["Orbach Science Library","Central Campus",33.974568,-117.324417],
+["Watkins Hall","Central Campus / Humanities",33.972593,-117.328938],
+["Pierce Hall","Central Campus",33.974225,-117.327183],
+["Bourns Hall","Bourns College of Engineering",33.975385,-117.326988],
+["Chemical Sciences","Sciences Quad",33.974366,-117.323029],
+["Physics Building","Sciences Quad",33.974686,-117.325289],
+["Boyce Hall","Life Sciences Quad",33.973499,-117.324922],
+["Webber Hall","Life Sciences Quad",33.973552,-117.325371],
+["Noel Keen Hall","Life Sciences Quad",33.972836,-117.325083],
+["Batchelor Hall","Life Sciences Quad",33.972446,-117.325311],
+["Biological Sciences","Life Sciences Quad",33.972287,-117.326082],
+["Life Sciences 1500","Life Sciences Quad",33.973100,-117.326835],
+["Genomics Building","South Campus",33.971579,-117.326124],
+["Campbell Hall","South Campus",33.971694,-117.325381],
+["University Office Building","South Campus / Admin",33.971709,-117.324948],
+["Entomology Building","South Campus",33.970801,-117.326220],
+["Anderson Hall (School of Business)","South Campus",33.969860,-117.325915],
+["Chapman Hall","South Campus",33.970274,-117.326302]
+  ]
+},
+
+santabarbara: {
+  label: "UC Santa Barbara",
+  center: [34.4135,-119.8470],
+  zoom: 15,
+  confidence: "medium",
+  source: "UCSB Resource Center for Sexual & Gender Diversity “Detailed All-Gender Restroom List”. Coordinates mostly estimated.",
+  data: [
+["Davidson Library","Central Campus",34.4136,-119.8462],
+["University Center (UCen)","Central Campus",34.4142,-119.8492],
+["Student Resource Building","Central Campus",34.4145,-119.8497],
+["AS Main (Associated Students)","Central Campus",34.4143,-119.8494],
+["Kerr Hall","Central Campus",34.4148,-119.8480],
+["Cheadle Hall","Central Campus",34.4132,-119.8481],
+["Girvetz Hall","Central Campus",34.41333,-119.84708],
+["Phelps Hall","Central Campus",34.4122,-119.8465],
+["North Hall","Central Campus",34.4140,-119.8474],
+["South Hall","Central Campus",34.4129,-119.8471],
+["Humanities and Social Sciences Building (HSSB)","Central Campus",34.4113,-119.8455],
+["Psychology Building","Central Campus",34.4123,-119.8459],
+["Psychology East","Central Campus",34.4120,-119.8462],
+["Social Science and Media Studies Building","Central Campus",34.4118,-119.8450],
+["Theater & Dance West","Central Campus",34.4128,-119.8469],
+["Broida Hall (Physics)","North Campus",34.4149,-119.8447],
+["Kohn Hall","North Campus",34.4145,-119.8437],
+["Chemistry Building","North Campus",34.4143,-119.8460],
+["Chemistry Annex","North Campus",34.4145,-119.8458],
+["Bio Science Instructional Facility","North Campus",34.4150,-119.8460],
+["Elings Hall","North Campus",34.4137,-119.8420],
+["Bren Hall","North Campus",34.4121,-119.8420],
+["Engineering II","North Campus",34.4133,-119.8428],
+["Engineering Science Building","North Campus",34.4128,-119.8433],
+["Materials Research Lab","North Campus",34.4135,-119.8432],
+["Cloud Research Lab","South Campus",34.4098,-119.8438],
+["Marine Biotechnology Lab","South Campus",34.4102,-119.8440],
+["Marine Science Building","South Campus",34.4102,-119.8440],
+["Embarcadero Hall","Central Campus",34.4108,-119.8462],
+["Communication Trailer 2","Central Campus",34.4148,-119.8481],
+["Isla Vista Theater","Isla Vista",34.4131,-119.8555],
+["Pardall Center","Isla Vista",34.4131,-119.8551],
+["Chicano Students Center (El Centro)","Central Campus",34.4163,-119.8500],
+["Mosher Alumni House","West Campus",34.4147,-119.8510],
+["Centennial House Conference Facility","South Campus",34.4103,-119.8495],
+["Harder Stadium","North Campus",34.4200,-119.8540],
+["Intercollegiate Athletics","North Campus",34.4185,-119.8530],
+["Multi-Activity Center (MAC)","South Campus",34.4095,-119.8505],
+["Recreation Center","South Campus",34.4095,-119.8510],
+["Student Health","South Campus",34.4110,-119.8510],
+["Building 402","West Campus",34.4115,-119.8530],
+["Building 477","West Campus",34.4118,-119.8525]
+  ]
+},
+
+santacruz: {
+  label: "UC Santa Cruz",
+  center: [36.9960,-122.0590],
+  zoom: 14,
+  confidence: "high",
+  source: "UCSC “All-Gender Restrooms at UC Santa Cruz” official Google My Maps / KML layer (Physical Planning & Cantú Queer Center). Precise coordinates.",
+  data: [
+["Arboretum Horticulture 1","UCSC Arboretum",36.9836511,-122.0608842],
+["Arboretum Horticulture 2","UCSC Arboretum",36.9838590,-122.0609137],
+["Colleges Nine and Ten Commons","College Nine & College Ten",37.0008904,-122.0579660],
+["College Nine Namaste Lounge","College Nine",37.0007019,-122.0571882],
+["Student Health Center","College Nine & College Ten",36.9996844,-122.0575771],
+["College Ten Terry Freitas Cafe","College Ten",37.0003592,-122.0580143],
+["Social Sciences 2","Social Sciences",37.0014795,-122.0588297],
+["Crown College Admin Building","Crown College",37.0002456,-122.0547581],
+["Central Boiler Plant","Core West",37.0006634,-122.0604444],
+["Communications Building","Core West",37.0008433,-122.0614368],
+["Physical Sciences Building","Science Hill",36.9995838,-122.0618391],
+["Cantú Center","Merrill College",37.0005927,-122.0539212],
+["Merrill College Library","Merrill College",36.9993524,-122.0532936],
+["Merrill College Plaza","Merrill College",37.0000486,-122.0532748],
+["Merrill Faculty Annex","Merrill College",36.9993503,-122.0535618],
+["Merrill Ming Ong Computer Lab","Merrill College",36.9996780,-122.0522448],
+["Humanities 1","Core Campus",36.9980414,-122.0545542],
+["Humanities 2","Core Campus",36.9984099,-122.0548224],
+["Interdisciplinary Sciences","Science Hill",36.9986498,-122.0597845],
+["Thimann Labs","Science Hill",36.9981528,-122.0618874],
+["Earth & Marine Sciences","Science Hill",36.9977629,-122.0597041],
+["Center for Adaptive Optics","Science Hill",36.9981699,-122.0604873],
+["Jack Baskin Engineering","Science Hill / Baskin Engineering",37.0002949,-122.0631963],
+["Jack Baskin Engineering Auditorium","Science Hill / Baskin Engineering",37.0000936,-122.0623809],
+["Iveta Cafe","Core Campus / Quarry Plaza",36.9982985,-122.0557934],
+["Student Union","Core Campus / Quarry Plaza",36.9978957,-122.0560080],
+["Student Union Redwood Building","Core Campus / Quarry Plaza",36.9975958,-122.0561206],
+["OPERS Fitness Center (Wellness)","East Field / OPERS",36.9935577,-122.0547017],
+["OPERS Offices & Support Services","East Field / OPERS",36.9950113,-122.0541841],
+["Cowell College Commons","Cowell College",36.9973216,-122.0533580],
+["Cowell Faculty Office","Cowell College",36.9975251,-122.0537710],
+["Hahn Art Facility","Cowell College",36.9978936,-122.0527142],
+["McHenry Library","Science Hill",36.9955243,-122.0590737],
+["Kerr Hall","Core Campus",36.9969939,-122.0620269],
+["Theater Arts A Main Stage","Performing Arts Complex",36.9947970,-122.0625271],
+["Elena Baskin Building B","Performing Arts Complex",36.9948603,-122.0608642],
+["Elena Baskin Building H","Performing Arts Complex",36.9945421,-122.0607877],
+["Elena Baskin Building P","Performing Arts Complex",36.9949963,-122.0612289],
+["DARC Building","Porter College Area",36.9938341,-122.0606804],
+["Music Center","Performing Arts Complex",36.9932171,-122.0599052],
+["Porter College Academic","Porter College",36.9942658,-122.0652656],
+["Kresge College Annex Building A","Kresge College",36.9971653,-122.0664391],
+["Kresge College Academic Building West Wing","Kresge College",36.9974266,-122.0669702],
+["Kresge College Town Hall","Kresge College",36.9986819,-122.0662754],
+["Porter College I Lounge","Porter College",36.9965526,-122.0652696],
+["Rachel Carson College Cafe","Rachel Carson College",36.9916082,-122.0643684],
+["Rachel Carson College Student Commons","Rachel Carson College",36.9912376,-122.0646232],
+["Visual Arts Research Facility","Porter College / Visual Arts",36.9925594,-122.0647761],
+["Oakes College Academic Building","Oakes College",36.9897272,-122.0628288],
+["Farm Louise Cain Gatehouse","UCSC Farm & Garden",36.9833265,-122.0542713],
+["Agroecology Trailer 4 (Life Lab)","UCSC Farm & Garden",36.9833051,-122.0546588],
+["Center for Agroecology & Sustainable Food Systems Lab","UCSC Farm & Garden",36.9834166,-122.0551684],
+["Farm Chalet","UCSC Farm & Garden",36.9838268,-122.0554715],
+["Barn G","Lower Campus / Barn Complex",36.9802680,-122.0526820],
+["Campus Fleet Garage & TSM Office","Lower Campus / Barn Complex",36.9799294,-122.0533419],
+["Cardiff House Women's Center","Lower Campus / Barn Complex",36.9793852,-122.0515233],
+["Carriage House","Lower Campus / Barn Complex",36.9800323,-122.0519471],
+["Emergency Response Center","Lower Campus / Barn Complex",36.9792823,-122.0520383],
+["Cook House","Lower Campus / Barn Complex",36.9789224,-122.0545650],
+["Receiving Barn (Barn H)","Lower Campus / Barn Complex",36.9796166,-122.0533901]
+  ]
+}
+
+};
+
+// ============================================================
+// App logic
+// ============================================================
+const map = L.map('map', {zoomControl:false}).setView([32.8795,-117.2380], 15);
+L.control.zoom({position:'bottomright'}).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+const markerLayer = L.layerGroup().addTo(map);
+
+function pinIcon(active){
+  return L.divIcon({
+    className:'',
+    html:`<div style="
+      width:30px;height:30px;
+      background:${active ? '#ea4335' : '#1a73e8'};
+      border-radius:50% 50% 50% 0;
+      transform:rotate(-45deg);
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 2px 5px rgba(0,0,0,0.4);
+      border:2px solid #fff;">
+      <span style="transform:rotate(45deg);font-size:14px;">\u{1F6BB}</span>
+    </div>`,
+    iconSize:[30,30],
+    iconAnchor:[15,30],
+    popupAnchor:[0,-28]
+  });
+}
+
+const campusSelect = document.getElementById('campus-select');
+const searchBox = document.getElementById('search-box');
+const regionFilter = document.getElementById('region-filter');
+const resultCount = document.getElementById('result-count');
+const emptyEl = document.getElementById('empty');
+const listEl = document.getElementById('list');
+const confidenceBadge = document.getElementById('confidence-badge');
+const sourceNote = document.getElementById('source-note');
+
+Object.keys(CAMPUSES).forEach(key=>{
+  const opt = document.createElement('option');
+  opt.value = key;
+  opt.textContent = CAMPUSES[key].label + ' (' + CAMPUSES[key].data.length + ')';
+  campusSelect.appendChild(opt);
+});
+
+let currentCampus = 'ucsd';
+let markers = [];
+let activeIndex = null;
+
+function loadCampus(key){
+  currentCampus = key;
+  activeIndex = null;
+  const c = CAMPUSES[key];
+
+  map.setView(c.center, c.zoom);
+  markerLayer.clearLayers();
+  markers = c.data.map((r,i)=>{
+    const [name, region, lat, lng] = r;
+    const m = L.marker([lat,lng], {icon:pinIcon(false)});
+    m.bindPopup(`<b>${name}</b><br>${region}<div class="popup-tag">Restroom</div>`);
+    m.on('click', ()=>selectItem(i));
+    m.addTo(markerLayer);
+    return m;
+  });
+
+  const regions = [...new Set(c.data.map(r=>r[1]))].sort();
+  regionFilter.innerHTML = '<option value="">All areas of campus</option>' +
+    regions.map(r=>`<option value="${r}">${r}</option>`).join('');
+  searchBox.value = '';
+
+  confidenceBadge.textContent = c.confidence === 'high' ? 'High-confidence data' : 'Approximate data';
+  confidenceBadge.className = c.confidence === 'high' ? 'conf-high' : 'conf-medium';
+  sourceNote.textContent = c.data.length + ' restroom locations. Source: ' + c.source;
+
+  render();
+}
+
+function render(){
+  const c = CAMPUSES[currentCampus];
+  const q = searchBox.value.trim().toLowerCase();
+  const region = regionFilter.value;
+  listEl.innerHTML = '';
+  let count = 0;
+
+  c.data.forEach((r,i)=>{
+    const [name, reg] = r;
+    const matchesQ = !q || name.toLowerCase().includes(q) || reg.toLowerCase().includes(q);
+    const matchesRegion = !region || reg === region;
+    const visible = matchesQ && matchesRegion;
+    const el = markers[i].getElement();
+    if(el) el.style.display = visible ? '' : 'none';
+    if(!visible) return;
+    count++;
+    const div = document.createElement('div');
+    div.className = 'item' + (i===activeIndex ? ' active' : '');
+    div.innerHTML = `<span class="pin">\u{1F4CD}</span><div class="info"><div class="name">${name}</div><div class="region">${reg}</div></div>`;
+    div.addEventListener('click', ()=>selectItem(i));
+    listEl.appendChild(div);
+  });
+
+  resultCount.textContent = `${count} restroom${count===1?'':'s'} found`;
+  emptyEl.style.display = count===0 ? 'block' : 'none';
+}
+
+function selectItem(i){
+  if(activeIndex!==null && markers[activeIndex]) markers[activeIndex].setIcon(pinIcon(false));
+  activeIndex = i;
+  markers[i].setIcon(pinIcon(true));
+  map.flyTo(markers[i].getLatLng(), 18, {duration:0.6});
+  markers[i].openPopup();
+  render();
+}
+
+campusSelect.addEventListener('change', e => loadCampus(e.target.value));
+searchBox.addEventListener('input', render);
+regionFilter.addEventListener('change', render);
+
+campusSelect.value = 'ucsd';
+loadCampus('ucsd');
+</script>
+</body>
+</html>
